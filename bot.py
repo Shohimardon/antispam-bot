@@ -36,7 +36,7 @@ from telegram.ext import (
 # Настройки
 # ──────────────────────────────────────────────
 
-BOT_TOKEN     = os.environ.get("BOT_TOKEN", "ВАШ_ТОКЕН_ЗДЕСЬ")
+BOT_TOKEN     = os.environ.get("BOT_TOKEN", "")
 KEYWORDS_FILE = "keywords.json"
 SETTINGS_FILE = "settings.json"
 
@@ -366,7 +366,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # ──────────────────────────────────────────────
 
 def main() -> None:
-    if BOT_TOKEN == "ВАШ_ТОКЕН_ЗДЕСЬ":
+    if not BOT_TOKEN:
         print("❌ Вставь токен бота через Railway Variables: BOT_TOKEN=твой_токен")
         return
 
