@@ -1,18 +1,12 @@
 """
-Telegram Антиспам Бот — TezWeb.uz
+Telegram Antispam Bot — TezWeb.uz
 ==================================
-Функции:
-  - Удаляет сообщения с запрещёнными словами
-  - Удаляет ссылки (http/https, t.me, @username)
-  - Удаляет фото и видео от не-админов
-  - Кикает нарушителя из группы
-  - Администраторы управляют настройками через команды
-
-Зависимости:
-    pip install python-telegram-bot==20.7
-
-Запуск:
-    python bot.py
+Funksiyalar:
+  - Taqiqlangan so'zli xabarlarni o'chiradi
+  - Havolalarni (http/https, t.me, @username) o'chiradi
+  - Admin bo'lmaganlarning rasm va videolarini o'chiradi
+  - Qoidabuzarni guruhdan chiqarib yuboradi
+  - Adminlar sozlamalarni buyruqlar orqali boshqaradi
 """
 
 import json
@@ -21,7 +15,6 @@ import os
 import re
 import asyncio
 from pathlib import Path
-from datetime import datetime
 
 from telegram import Update, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from telegram.ext import (
@@ -33,7 +26,7 @@ from telegram.ext import (
 )
 
 # ──────────────────────────────────────────────
-# Настройки
+# Sozlamalar
 # ──────────────────────────────────────────────
 
 BOT_TOKEN     = os.environ.get("BOT_TOKEN", "")
@@ -46,12 +39,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Регулярки для ссылок и @упоминаний
-URL_REGEX      = re.compile(r'(https?://\S+|www\.\S+|t\.me/\S+)', re.IGNORECASE)
-MENTION_REGEX  = re.compile(r'@[a-zA-Z0-9_]{4,}')
+URL_REGEX     = re.compile(r'(https?://\S+|www\.\S+|t\.me/\S+)', re.IGNORECASE)
+MENTION_REGEX = re.compile(r'@[a-zA-Z0-9_]{4,}')
 
 # ──────────────────────────────────────────────
-# Хранилище
+# Saqlash
 # ──────────────────────────────────────────────
 
 def load_keywords() -> set:
@@ -84,7 +76,7 @@ KEYWORDS: set  = load_keywords()
 SETTINGS: dict = load_settings()
 
 # ──────────────────────────────────────────────
-# Вспомогательные функции
+# Yordamchi funksiyalar
 # ──────────────────────────────────────────────
 
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -107,34 +99,28 @@ def contains_link(text: str) -> bool:
     return bool(URL_REGEX.search(text) or MENTION_REGEX.search(text))
 
 async def kick_user(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int) -> bool:
-    """Кикает пользователя (ban + unban = кик)."""
     try:
         await context.bot.ban_chat_member(chat_id, user_id)
         await asyncio.sleep(1)
         await context.bot.unban_chat_member(chat_id, user_id)
         return True
     except Exception as e:
-        logger.error("Не удалось кикнуть пользователя %s: %s", user_id, e)
+        logger.error("Foydalanuvchini chiqarib bo'lmadi %s: %s", user_id, e)
         return False
 
 async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, reason: str) -> None:
-    """Удаляет сообщение, кикает пользователя и уведомляет чат."""
     message = update.message
     user    = update.effective_user
     chat    = update.effective_chat
     name    = f"@{user.username}" if user.username else user.first_name
 
-    # Удаляем сообщение
     try:
         await message.delete()
     except Exception as e:
-        logger.error("Не удалось удалить сообщение: %s", e)
+        logger.error("Xabarni o'chirib bo'lmadi: %s", e)
 
-    # Кикаем
     kicked = await kick_user(context, chat.id, user.id)
 
-    # Уведомление в чат
-    kick_text = "guruhdan chiqarib yuborildi ✅" if kicked else "chiqarib bo'lmadi ⚠️"
     notice = await context.bot.send_message(
         chat_id=chat.id,
         text=(
@@ -145,9 +131,8 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
         parse_mode="Markdown",
     )
 
-    logger.info("Нарушитель %s кикнут из %s | причина: %s", name, chat.title or chat.id, reason)
+    logger.info("Qoidabuzar %s chiqarildi %s | sabab: %s", name, chat.title or chat.id, reason)
 
-    # Автоудаление уведомления через 10 секунд
     await asyncio.sleep(10)
     try:
         await notice.delete()
@@ -155,23 +140,23 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
         pass
 
 # ──────────────────────────────────────────────
-# Команды
+# Buyruqlar
 # ──────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
-        "⚡ *TezWeb.uz — Антиспам Бот*\n\n"
-        "Защищаю группу от спама 24/7.\n\n"
-        "*Команды для администраторов:*\n"
-        "`/addword слово` — добавить слово в чёрный список\n"
-        "`/delword слово` — убрать слово из списка\n"
-        "`/listwords` — показать все запрещённые слова\n"
-        "`/clearwords` — очистить весь список\n"
-        "`/settings` — текущие настройки блокировок\n"
-        "`/toggle links` — вкл/выкл блокировку ссылок\n"
-        "`/toggle photos` — вкл/выкл блокировку фото\n"
-        "`/toggle videos` — вкл/выкл блокировку видео\n"
-        "`/info` — о создателе бота"
+        "⚡ *TezWeb.uz — Antispam Bot*\n\n"
+        "Guruhingizni spam'dan 24/7 himoya qilaman.\n\n"
+        "*Adminlar uchun buyruqlar:*\n"
+        "`/addword so'z` — so'zni qora ro'yxatga qo'shish\n"
+        "`/delword so'z` — so'zni ro'yxatdan o'chirish\n"
+        "`/listwords` — barcha taqiqlangan so'zlarni ko'rish\n"
+        "`/clearwords` — ro'yxatni tozalash\n"
+        "`/settings` — hozirgi sozlamalar\n"
+        "`/toggle links` — havolalarni bloklash yoq/yoqish\n"
+        "`/toggle photos` — rasmlarni bloklash yoq/yoqish\n"
+        "`/toggle videos` — videolarni bloklash yoq/yoqish\n"
+        "`/info` — bot yaratuvchisi haqida"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -179,51 +164,51 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (
         "⚡ *TezWeb.uz*\n"
-        "_Сайты, которые загружаются быстрее и приносят заказы_\n\n"
-        "Делаем сайты за 1 секунду для онлайн-магазинов, "
-        "кафе, доставки и любого бизнеса. Чистый код, "
-        "SEO 100/100 и интеграция с Telegram.\n\n"
-        "📌 *Что мы делаем:*\n"
-        "• Сайты на чистом коде — от 8 000 000 сум\n"
-        "• Telegram боты с ИИ — от 6 000 000 сум\n"
-        "• Яндекс Директ и Google Ads\n"
-        "• SEO продвижение\n\n"
-        "✅ Первые заявки за 3 дня\n"
-        "✅ Ответим за 15 минут\n"
-        "✅ Результат или возврат средств"
+        "_Tezroq yuklanadigan va buyurtma keltiruvchi saytlar_\n\n"
+        "Onlayn-do'konlar, kafe, yetkazib berish va har qanday biznes uchun "
+        "1 soniyada yuklanadigan saytlar yaratamiz. Toza kod, "
+        "SEO 100/100 va Telegram integratsiyasi.\n\n"
+        "📌 *Biz nima qilamiz:*\n"
+        "• Toza kodda saytlar — 8 000 000 so'mdan\n"
+        "• AI Telegram botlar — 6 000 000 so'mdan\n"
+        "• Yandex Direct va Google Ads\n"
+        "• SEO ilgari surish\n\n"
+        "✅ Birinchi buyurtmalar 3 kunda\n"
+        "✅ 15 daqiqada javob beramiz\n"
+        "✅ Natija yoki pul qaytarish"
     )
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌐 Сайт", url="https://tezweb.uz/")],
-        [InlineKeyboardButton("💬 Написать в Telegram", url="https://t.me/Shohdollar22")],
+        [InlineKeyboardButton("🌐 Sayt", url="https://tezweb.uz/")],
+        [InlineKeyboardButton("💬 Telegram'da yozish", url="https://t.me/Shohdollar22")],
     ])
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await is_admin(update, context):
-        await update.message.reply_text("❌ Только администраторы могут это делать.")
+        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
         return
 
-    on  = "✅ Вкл"
-    off = "❌ Выкл"
+    yoq  = "✅ Yoqilgan"
+    yoqq = "❌ O'chirilgan"
     text = (
-        "⚙️ *Текущие настройки бота:*\n\n"
-        f"🔗 Блокировка ссылок: {on if SETTINGS['block_links']  else off}\n"
-        f"📷 Блокировка фото:   {on if SETTINGS['block_photos'] else off}\n"
-        f"🎥 Блокировка видео:  {on if SETTINGS['block_videos'] else off}\n\n"
-        "Переключить: `/toggle links` / `/toggle photos` / `/toggle videos`"
+        "⚙️ *Hozirgi bot sozlamalari:*\n\n"
+        f"🔗 Havolalarni bloklash: {yoq if SETTINGS['block_links']  else yoqq}\n"
+        f"📷 Rasmlarni bloklash:   {yoq if SETTINGS['block_photos'] else yoqq}\n"
+        f"🎥 Videolarni bloklash:  {yoq if SETTINGS['block_videos'] else yoqq}\n\n"
+        "O'zgartirish: `/toggle links` / `/toggle photos` / `/toggle videos`"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def cmd_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await is_admin(update, context):
-        await update.message.reply_text("❌ Только администраторы могут это делать.")
+        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
         return
 
     if not context.args:
         await update.message.reply_text(
-            "Использование: `/toggle links` / `/toggle photos` / `/toggle videos`",
+            "Ishlatish: `/toggle links` / `/toggle photos` / `/toggle videos`",
             parse_mode="Markdown"
         )
         return
@@ -236,85 +221,91 @@ async def cmd_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     }
 
     if arg not in mapping:
-        await update.message.reply_text("❌ Неизвестный параметр. Используй: `links`, `photos`, `videos`", parse_mode="Markdown")
+        await update.message.reply_text(
+            "❌ Noto'g'ri parametr. Foydalaning: `links`, `photos`, `videos`",
+            parse_mode="Markdown"
+        )
         return
 
     key = mapping[arg]
     SETTINGS[key] = not SETTINGS[key]
     save_settings(SETTINGS)
 
-    status = "✅ включена" if SETTINGS[key] else "❌ выключена"
-    labels = {"links": "Блокировка ссылок", "photos": "Блокировка фото", "videos": "Блокировка видео"}
-    await update.message.reply_text(f"{labels[arg]}: {status}")
+    holat  = "✅ yoqildi" if SETTINGS[key] else "❌ o'chirildi"
+    nomlar = {
+        "links":  "Havolalarni bloklash",
+        "photos": "Rasmlarni bloklash",
+        "videos": "Videolarni bloklash",
+    }
+    await update.message.reply_text(f"{nomlar[arg]}: {holat}")
 
 
 async def cmd_addword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await is_admin(update, context):
-        await update.message.reply_text("❌ Только администраторы могут это делать.")
+        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
         return
     if not context.args:
-        await update.message.reply_text("Использование: `/addword слово`", parse_mode="Markdown")
+        await update.message.reply_text("Ishlatish: `/addword so'z`", parse_mode="Markdown")
         return
 
     word = " ".join(context.args).strip().lower()
     if word in KEYWORDS:
-        await update.message.reply_text(f'Слово *"{word}"* уже в списке.', parse_mode="Markdown")
+        await update.message.reply_text(f'*"{word}"* so\'zi allaqachon ro\'yxatda.', parse_mode="Markdown")
         return
 
     KEYWORDS.add(word)
     save_keywords(KEYWORDS)
-    await update.message.reply_text(f'✅ Добавлено: *"{word}"*', parse_mode="Markdown")
+    await update.message.reply_text(f'✅ Qo\'shildi: *"{word}"*', parse_mode="Markdown")
 
 
 async def cmd_delword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await is_admin(update, context):
-        await update.message.reply_text("❌ Только администраторы могут это делать.")
+        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
         return
     if not context.args:
-        await update.message.reply_text("Использование: `/delword слово`", parse_mode="Markdown")
+        await update.message.reply_text("Ishlatish: `/delword so'z`", parse_mode="Markdown")
         return
 
     word = " ".join(context.args).strip().lower()
     if word not in KEYWORDS:
-        await update.message.reply_text(f'Слово *"{word}"* не найдено.', parse_mode="Markdown")
+        await update.message.reply_text(f'*"{word}"* so\'zi ro\'yxatda topilmadi.', parse_mode="Markdown")
         return
 
     KEYWORDS.discard(word)
     save_keywords(KEYWORDS)
-    await update.message.reply_text(f'🗑 Удалено: *"{word}"*', parse_mode="Markdown")
+    await update.message.reply_text(f'🗑 O\'chirildi: *"{word}"*', parse_mode="Markdown")
 
 
 async def cmd_listwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await is_admin(update, context):
-        await update.message.reply_text("❌ Только администраторы могут это делать.")
+        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
         return
     if not KEYWORDS:
-        await update.message.reply_text("📋 Список запрещённых слов пуст.")
+        await update.message.reply_text("📋 Taqiqlangan so'zlar ro'yxati bo'sh.")
         return
 
     words = sorted(KEYWORDS)
     lines = "\n".join(f"  • {w}" for w in words)
     await update.message.reply_text(
-        f"📋 *Запрещённые слова ({len(words)}):**\n{lines}",
+        f"📋 *Taqiqlangan so'zlar ({len(words)}):**\n{lines}",
         parse_mode="Markdown",
     )
 
 
 async def cmd_clearwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await is_admin(update, context):
-        await update.message.reply_text("❌ Только администраторы могут это делать.")
+        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
         return
     KEYWORDS.clear()
     save_keywords(KEYWORDS)
-    await update.message.reply_text("🧹 Список запрещённых слов очищен.")
+    await update.message.reply_text("🧹 Taqiqlangan so'zlar ro'yxati tozalandi.")
 
 
 # ──────────────────────────────────────────────
-# Обработчики сообщений
+# Xabar ishlovchilari
 # ──────────────────────────────────────────────
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Проверяет текстовые сообщения на спам-слова и ссылки."""
     message = update.message
     if not message or not message.text:
         return
@@ -325,54 +316,47 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     text = message.text
 
-    # Проверка ключевых слов
     found_word = contains_spam_word(text)
     if found_word:
         await delete_and_kick(update, context, f"Taqiqlangan so'z: \"{found_word}\"")
         return
 
-    # Проверка ссылок
     if SETTINGS["block_links"] and contains_link(text):
         await delete_and_kick(update, context, "Xabar ichida havola (link) bor")
         return
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Удаляет фото от не-админов если блокировка включена."""
     if not SETTINGS["block_photos"]:
         return
     if update.effective_chat.type == "private":
         return
     if await is_admin(update, context):
         return
-
     await delete_and_kick(update, context, "Guruhda rasm yuborish taqiqlangan")
 
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Удаляет видео от не-админов если блокировка включена."""
     if not SETTINGS["block_videos"]:
         return
     if update.effective_chat.type == "private":
         return
     if await is_admin(update, context):
         return
-
     await delete_and_kick(update, context, "Guruhda video yuborish taqiqlangan")
 
 
 # ──────────────────────────────────────────────
-# Запуск
+# Ishga tushirish
 # ──────────────────────────────────────────────
 
 def main() -> None:
     if not BOT_TOKEN:
-        print("❌ Вставь токен бота через Railway Variables: BOT_TOKEN=твой_токен")
+        print("❌ Railway Variables orqali tokenni kiriting: BOT_TOKEN=sizning_tokeningiz")
         return
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Команды
     app.add_handler(CommandHandler("start",      cmd_start))
     app.add_handler(CommandHandler("info",       cmd_info))
     app.add_handler(CommandHandler("settings",   cmd_settings))
@@ -382,12 +366,11 @@ def main() -> None:
     app.add_handler(CommandHandler("listwords",  cmd_listwords))
     app.add_handler(CommandHandler("clearwords", cmd_clearwords))
 
-    # Обработчики контента
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO,                   handle_photo))
     app.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, handle_video))
 
-    logger.info("✅ TezWeb Антиспам Бот запущен!")
+    logger.info("✅ TezWeb Antispam Bot ishga tushdi!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
