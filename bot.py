@@ -134,7 +134,7 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
 
     logger.info("Qoidabuzar %s chiqarildi | sabab: %s", name, reason)
 
-    await asyncio.sleep(10)
+    await asyncio.sleep(100)
     try:
         await notice.delete()
     except Exception:
