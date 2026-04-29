@@ -6,7 +6,7 @@ Funksiyalar:
   - Havolalarni (http/https, t.me, @username) o'chiradi
   - Admin bo'lmaganlarning rasm va videolarini o'chiradi
   - Qoidabuzarni guruhdan chiqarib yuboradi
-  - Adminlar sozlamalarni buyruqlar orqali boshqaradi
+  - Faqat guruh adminlari so'zlarni boshqara oladi (shaxsiy xabarda)
 """
 
 import json
@@ -16,7 +16,7 @@ import re
 import asyncio
 from pathlib import Path
 
-from telegram import Update, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
+from telegram import Update, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -32,6 +32,9 @@ from telegram.ext import (
 BOT_TOKEN     = os.environ.get("BOT_TOKEN", "")
 KEYWORDS_FILE = "keywords.json"
 SETTINGS_FILE = "settings.json"
+# Guruh ID — bot qaysi guruhni himoya qilishini biladi
+# Bo'sh qoldirsang barcha guruhlarda ishlaydi
+ALLOWED_GROUP_ID = int(os.environ.get("GROUP_ID", "0"))
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -79,7 +82,18 @@ SETTINGS: dict = load_settings()
 # Yordamchi funksiyalar
 # ──────────────────────────────────────────────
 
-async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+async def is_group_admin(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Foydalanuvchi guruh admini ekanligini tekshiradi (shaxsiy xabardan)."""
+    if ALLOWED_GROUP_ID == 0:
+        return False
+    try:
+        member = await context.bot.get_chat_member(ALLOWED_GROUP_ID, user_id)
+        return member.status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER)
+    except Exception:
+        return False
+
+async def is_admin_in_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Joriy chatdagi admin ekanligini tekshiradi."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     try:
@@ -119,7 +133,7 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
     except Exception as e:
         logger.error("Xabarni o'chirib bo'lmadi: %s", e)
 
-    kicked = await kick_user(context, chat.id, user.id)
+    await kick_user(context, chat.id, user.id)
 
     notice = await context.bot.send_message(
         chat_id=chat.id,
@@ -131,7 +145,7 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
         parse_mode="Markdown",
     )
 
-    logger.info("Qoidabuzar %s chiqarildi %s | sabab: %s", name, chat.title or chat.id, reason)
+    logger.info("Qoidabuzar %s chiqarildi | sabab: %s", name, reason)
 
     await asyncio.sleep(10)
     try:
@@ -140,28 +154,45 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
         pass
 
 # ──────────────────────────────────────────────
-# Buyruqlar
+# Buyruqlar — SHAXSIY XABAR (faqat adminlar)
 # ──────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = (
-        "⚡ *TezWeb.uz — Antispam Bot*\n\n"
-        "Guruhingizni spam'dan 24/7 himoya qilaman.\n\n"
-        "*Adminlar uchun buyruqlar:*\n"
-        "`/addword so'z` — so'zni qora ro'yxatga qo'shish\n"
-        "`/delword so'z` — so'zni ro'yxatdan o'chirish\n"
-        "`/listwords` — barcha taqiqlangan so'zlarni ko'rish\n"
-        "`/clearwords` — ro'yxatni tozalash\n"
-        "`/settings` — hozirgi sozlamalar\n"
-        "`/toggle links` — havolalarni bloklash yoq/yoqish\n"
-        "`/toggle photos` — rasmlarni bloklash yoq/yoqish\n"
-        "`/toggle videos` — videolarni bloklash yoq/yoqish\n"
-        "`/info` — bot yaratuvchisi haqida"
-    )
+    # Guruhda /start ga javob berma
+    if update.effective_chat.type != "private":
+        return
+
+    user_id  = update.effective_user.id
+    is_admin = await is_group_admin(user_id, context)
+
+    if is_admin:
+        text = (
+            "⚡ *TezWeb.uz — Antispam Bot*\n\n"
+            "Salom, admin! Guruhni boshqarish uchun buyruqlar:\n\n"
+            "`/addword so'z` — so'zni qora ro'yxatga qo'shish\n"
+            "`/delword so'z` — so'zni ro'yxatdan o'chirish\n"
+            "`/listwords` — barcha taqiqlangan so'zlarni ko'rish\n"
+            "`/clearwords` — ro'yxatni tozalash\n"
+            "`/settings` — hozirgi sozlamalar\n"
+            "`/toggle links` — havolalarni bloklash yoq/yoqish\n"
+            "`/toggle photos` — rasmlarni bloklash yoq/yoqish\n"
+            "`/toggle videos` — videolarni bloklash yoq/yoqish\n"
+            "`/info` — bot yaratuvchisi haqida"
+        )
+    else:
+        text = (
+            "⚡ *TezWeb.uz — Antispam Bot*\n\n"
+            "Assalomu alaykum! Men guruhlarni spam'dan himoya qiluvchi botman.\n\n"
+            "📌 Ko'proq ma'lumot uchun /info buyrug'ini yuboring."
+        )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Guruhda /info ga javob berma
+    if update.effective_chat.type != "private":
+        return
+
     text = (
         "⚡ *TezWeb.uz*\n"
         "_Tezroq yuklanadigan va buyurtma keltiruvchi saytlar_\n\n"
@@ -185,8 +216,10 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
+    if update.effective_chat.type != "private":
+        return
+    if not await is_group_admin(update.effective_user.id, context):
+        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
         return
 
     yoq  = "✅ Yoqilgan"
@@ -202,8 +235,10 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cmd_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
+    if update.effective_chat.type != "private":
+        return
+    if not await is_group_admin(update.effective_user.id, context):
+        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
         return
 
     if not context.args:
@@ -213,12 +248,8 @@ async def cmd_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
         return
 
-    arg = context.args[0].lower()
-    mapping = {
-        "links":  "block_links",
-        "photos": "block_photos",
-        "videos": "block_videos",
-    }
+    arg     = context.args[0].lower()
+    mapping = {"links": "block_links", "photos": "block_photos", "videos": "block_videos"}
 
     if arg not in mapping:
         await update.message.reply_text(
@@ -232,17 +263,15 @@ async def cmd_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     save_settings(SETTINGS)
 
     holat  = "✅ yoqildi" if SETTINGS[key] else "❌ o'chirildi"
-    nomlar = {
-        "links":  "Havolalarni bloklash",
-        "photos": "Rasmlarni bloklash",
-        "videos": "Videolarni bloklash",
-    }
+    nomlar = {"links": "Havolalarni bloklash", "photos": "Rasmlarni bloklash", "videos": "Videolarni bloklash"}
     await update.message.reply_text(f"{nomlar[arg]}: {holat}")
 
 
 async def cmd_addword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
+    if update.effective_chat.type != "private":
+        return
+    if not await is_group_admin(update.effective_user.id, context):
+        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
         return
     if not context.args:
         await update.message.reply_text("Ishlatish: `/addword so'z`", parse_mode="Markdown")
@@ -259,8 +288,10 @@ async def cmd_addword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def cmd_delword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
+    if update.effective_chat.type != "private":
+        return
+    if not await is_group_admin(update.effective_user.id, context):
+        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
         return
     if not context.args:
         await update.message.reply_text("Ishlatish: `/delword so'z`", parse_mode="Markdown")
@@ -277,8 +308,10 @@ async def cmd_delword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def cmd_listwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
+    if update.effective_chat.type != "private":
+        return
+    if not await is_group_admin(update.effective_user.id, context):
+        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
         return
     if not KEYWORDS:
         await update.message.reply_text("📋 Taqiqlangan so'zlar ro'yxati bo'sh.")
@@ -293,8 +326,10 @@ async def cmd_listwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def cmd_clearwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await is_admin(update, context):
-        await update.message.reply_text("❌ Faqat adminlar bu amalni bajarishi mumkin.")
+    if update.effective_chat.type != "private":
+        return
+    if not await is_group_admin(update.effective_user.id, context):
+        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
         return
     KEYWORDS.clear()
     save_keywords(KEYWORDS)
@@ -302,7 +337,7 @@ async def cmd_clearwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ──────────────────────────────────────────────
-# Xabar ishlovchilari
+# Guruhda xabarlarni tekshirish
 # ──────────────────────────────────────────────
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -311,7 +346,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if update.effective_chat.type == "private":
         return
-    if await is_admin(update, context):
+    if await is_admin_in_chat(update, context):
         return
 
     text = message.text
@@ -331,7 +366,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     if update.effective_chat.type == "private":
         return
-    if await is_admin(update, context):
+    if await is_admin_in_chat(update, context):
         return
     await delete_and_kick(update, context, "Guruhda rasm yuborish taqiqlangan")
 
@@ -341,7 +376,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     if update.effective_chat.type == "private":
         return
-    if await is_admin(update, context):
+    if await is_admin_in_chat(update, context):
         return
     await delete_and_kick(update, context, "Guruhda video yuborish taqiqlangan")
 
