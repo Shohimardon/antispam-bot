@@ -1,12 +1,5 @@
 """
 Telegram Antispam Bot — TezWeb.uz
-==================================
-Funksiyalar:
-  - Taqiqlangan so'zli xabarlarni o'chiradi
-  - Havolalarni (http/https, t.me, @username) o'chiradi
-  - Admin bo'lmaganlarning rasm va videolarini o'chiradi
-  - Qoidabuzarni guruhdan chiqarib yuboradi
-  - Faqat guruh adminlari so'zlarni boshqara oladi (shaxsiy xabarda)
 """
 
 import json
@@ -32,9 +25,9 @@ from telegram.ext import (
 BOT_TOKEN     = os.environ.get("BOT_TOKEN", "")
 KEYWORDS_FILE = "keywords.json"
 SETTINGS_FILE = "settings.json"
-# Guruh ID — bot qaysi guruhni himoya qilishini biladi
-# Bo'sh qoldirsang barcha guruhlarda ishlaydi
-ALLOWED_GROUP_ID = int(os.environ.get("GROUP_ID", "0"))
+
+# Faqat shu ID'lar botni boshqara oladi
+ADMIN_IDS = {6038976942, 2018064843}
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -82,18 +75,12 @@ SETTINGS: dict = load_settings()
 # Yordamchi funksiyalar
 # ──────────────────────────────────────────────
 
-async def is_group_admin(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Foydalanuvchi guruh admini ekanligini tekshiradi (shaxsiy xabardan)."""
-    if ALLOWED_GROUP_ID == 0:
-        return False
-    try:
-        member = await context.bot.get_chat_member(ALLOWED_GROUP_ID, user_id)
-        return member.status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER)
-    except Exception:
-        return False
+def is_super_admin(user_id: int) -> bool:
+    """Foydalanuvchi super admin ekanligini tekshiradi."""
+    return user_id in ADMIN_IDS
 
 async def is_admin_in_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Joriy chatdagi admin ekanligini tekshiradi."""
+    """Guruhda admin ekanligini tekshiradi."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
     try:
@@ -154,18 +141,14 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
         pass
 
 # ──────────────────────────────────────────────
-# Buyruqlar — SHAXSIY XABAR (faqat adminlar)
+# Buyruqlar — faqat shaxsiy xabarda, faqat super adminlar
 # ──────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Guruhda /start ga javob berma
     if update.effective_chat.type != "private":
         return
 
-    user_id  = update.effective_user.id
-    is_admin = await is_group_admin(user_id, context)
-
-    if is_admin:
+    if is_super_admin(update.effective_user.id):
         text = (
             "⚡ *TezWeb.uz — Antispam Bot*\n\n"
             "Salom, admin! Guruhni boshqarish uchun buyruqlar:\n\n"
@@ -189,7 +172,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Guruhda /info ga javob berma
     if update.effective_chat.type != "private":
         return
 
@@ -218,8 +200,7 @@ async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type != "private":
         return
-    if not await is_group_admin(update.effective_user.id, context):
-        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
+    if not is_super_admin(update.effective_user.id):
         return
 
     yoq  = "✅ Yoqilgan"
@@ -237,8 +218,7 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def cmd_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type != "private":
         return
-    if not await is_group_admin(update.effective_user.id, context):
-        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
+    if not is_super_admin(update.effective_user.id):
         return
 
     if not context.args:
@@ -270,8 +250,7 @@ async def cmd_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def cmd_addword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type != "private":
         return
-    if not await is_group_admin(update.effective_user.id, context):
-        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
+    if not is_super_admin(update.effective_user.id):
         return
     if not context.args:
         await update.message.reply_text("Ishlatish: `/addword so'z`", parse_mode="Markdown")
@@ -290,8 +269,7 @@ async def cmd_addword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_delword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type != "private":
         return
-    if not await is_group_admin(update.effective_user.id, context):
-        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
+    if not is_super_admin(update.effective_user.id):
         return
     if not context.args:
         await update.message.reply_text("Ishlatish: `/delword so'z`", parse_mode="Markdown")
@@ -310,8 +288,7 @@ async def cmd_delword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_listwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type != "private":
         return
-    if not await is_group_admin(update.effective_user.id, context):
-        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
+    if not is_super_admin(update.effective_user.id):
         return
     if not KEYWORDS:
         await update.message.reply_text("📋 Taqiqlangan so'zlar ro'yxati bo'sh.")
@@ -328,8 +305,7 @@ async def cmd_listwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def cmd_clearwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type != "private":
         return
-    if not await is_group_admin(update.effective_user.id, context):
-        await update.message.reply_text("❌ Bu buyruq faqat guruh adminlari uchun.")
+    if not is_super_admin(update.effective_user.id):
         return
     KEYWORDS.clear()
     save_keywords(KEYWORDS)
