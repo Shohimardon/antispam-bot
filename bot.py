@@ -318,7 +318,7 @@ async def cmd_addword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     KEYWORDS.add(word)
     save_keywords(KEYWORDS)
-    await update.message.reply_text(f'✅ Qo\'shildi: *"{word}"*', parse_mode="Markdown")
+    await update.message.reply_text(f'✅ Qo\'shildi: *"{word}"*\n\n🔍 Endi bu so\'z bilan yangi xabarlar avtomatik o\'chiriladi.', parse_mode="Markdown")
 
 
 async def cmd_delword(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -528,7 +528,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 
 if __name__ == "__main__":
