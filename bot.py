@@ -9,6 +9,9 @@ import re
 import asyncio
 from pathlib import Path
 
+# Railway volume mount path — agar yo'q bo'lsa /tmp ishlatamiz
+DATA_DIR = Path(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/tmp"))
+
 from telegram import Update, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -23,9 +26,9 @@ from telegram.ext import (
 # ──────────────────────────────────────────────
 
 BOT_TOKEN     = os.environ.get("BOT_TOKEN", "")
-KEYWORDS_FILE = "keywords.json"
-SETTINGS_FILE  = "settings.json"
-GROUPS_FILE    = "groups.json"
+KEYWORDS_FILE = str(DATA_DIR / "keywords.json")
+SETTINGS_FILE  = str(DATA_DIR / "settings.json")
+GROUPS_FILE    = str(DATA_DIR / "groups.json")
 
 # Faqat shu ID'lar botni boshqara oladi
 ADMIN_IDS = {6038976942, 2018064843}
@@ -352,8 +355,7 @@ async def cmd_listwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     words = sorted(KEYWORDS)
     lines = "\n".join(f"  • {w}" for w in words)
     await update.message.reply_text(
-        f"📋 *Taqiqlangan so'zlar ({len(words)}):**\n{lines}",
-        parse_mode="Markdown",
+        f"📋 Taqiqlangan sozlar ({len(words)}):\n\n{lines}",
     )
 
 
@@ -524,10 +526,6 @@ def main() -> None:
 
     logger.info("✅ TezWeb Antispam Bot ishga tushdi!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":
