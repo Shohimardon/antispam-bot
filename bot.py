@@ -518,11 +518,14 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, handle_video))
 
     # Jadval — 7:00 va 21:00 Toshkent vaqti (UTC+5 = 02:00 va 16:00 UTC)
+    import datetime as dt
+
+    async def promo_job(ctx):
+        await send_promo(ctx.bot)
+
     job_queue = app.job_queue
-    job_queue.run_daily(lambda ctx: asyncio.create_task(send_promo(ctx.bot)),
-                        time=__import__('datetime').time(2, 0, 0))   # 7:00 Toshkent
-    job_queue.run_daily(lambda ctx: asyncio.create_task(send_promo(ctx.bot)),
-                        time=__import__('datetime').time(16, 0, 0))  # 21:00 Toshkent
+    job_queue.run_daily(promo_job, time=dt.time(2, 0, 0))   # 7:00 Toshkent
+    job_queue.run_daily(promo_job, time=dt.time(16, 0, 0))  # 21:00 Toshkent
 
     logger.info("✅ TezWeb Antispam Bot ishga tushdi!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
