@@ -165,10 +165,25 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
 # ──────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_chat.type != "private":
-        return
-
     bot_username = context.bot.username
+
+    # Guruhda /start yozilsa — reklama xabari yuborish
+    if update.effective_chat.type in ("group", "supergroup"):
+        text = (
+            "🛡 *TezWeb Antispam Bot* — bu yerda!\n\n"
+            "Men guruhingizni spam, havolalar, rasm va videodan "
+            "*24/7 himoya qilaman!*\n\n"
+            "✅ Spamchilarni avtomatik o'chiraman\n"
+            "✅ Havolalar va reklamani bloklash\n"
+            "✅ Qoidabuzarni guruhdan chiqaraman\n\n"
+            "👥 Boshqa guruhlaringizga ham qo'shing:"
+        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Guruhga qo'shish", url=f"https://t.me/{bot_username}?startgroup=true")],
+            [InlineKeyboardButton("📢 @tezweb_uz", url="https://t.me/tezweb_uz")],
+        ])
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
+        return
 
     if is_super_admin(update.effective_user.id):
         text = (
