@@ -24,7 +24,8 @@ from telegram.ext import (
 
 BOT_TOKEN     = os.environ.get("BOT_TOKEN", "")
 KEYWORDS_FILE = "keywords.json"
-SETTINGS_FILE = "settings.json"
+SETTINGS_FILE  = "settings.json"
+GROUPS_FILE    = "groups.json"
 
 # Faqat shu ID'lar botni boshqara oladi
 ADMIN_IDS = {6038976942, 2018064843}
@@ -70,6 +71,19 @@ def save_settings(settings: dict) -> None:
 
 KEYWORDS: set  = load_keywords()
 SETTINGS: dict = load_settings()
+
+def load_groups() -> set:
+    if Path(GROUPS_FILE).exists():
+        with open(GROUPS_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    return set()
+
+def save_groups(groups: set) -> None:
+    with open(GROUPS_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(groups), f, ensure_ascii=False, indent=2)
+
+GROUPS: set = load_groups()
+
 
 # ──────────────────────────────────────────────
 # Yordamchi funksiyalar
@@ -127,9 +141,15 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
         text=(
             f"🚫 *{name}*, siz guruh qoidalarini buzgansiz!\n"
             f"📌 Sabab: {reason}\n"
-            f"👢 Siz guruhdan chiqarib yuborldingiz."
+            f"👢 Siz guruhdan chiqarib yuborldingiz.\n\n"
+            f"🛡 Guruhingizda spam ko'pmi? Meni qo'shing — "
+            f"spamdan 24/7 himoya qilaman!"
         ),
         parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Guruhga qo'shish", url=f"https://t.me/{context.bot.username}?startgroup=true")],
+            [InlineKeyboardButton("📢 @tezweb_uz", url="https://t.me/tezweb_uz")],
+        ])
     )
 
     logger.info("Qoidabuzar %s chiqarildi | sabab: %s", name, reason)
@@ -148,6 +168,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_chat.type != "private":
         return
 
+    bot_username = context.bot.username
+
     if is_super_admin(update.effective_user.id):
         text = (
             "⚡ *TezWeb.uz — Antispam Bot*\n\n"
@@ -162,13 +184,31 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "`/toggle videos` — videolarni bloklash yoq/yoqish\n"
             "`/info` — bot yaratuvchisi haqida"
         )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Guruhga qo'shish", url=f"https://t.me/{bot_username}?startgroup=true")],
+            [InlineKeyboardButton("📢 Kanalimiz", url="https://t.me/tezweb_uz")],
+        ])
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
     else:
         text = (
-            "⚡ *TezWeb.uz — Antispam Bot*\n\n"
-            "Assalomu alaykum! Men guruhlarni spam'dan himoya qiluvchi botman.\n\n"
-            "📌 Ko'proq ma'lumot uchun /info buyrug'ini yuboring."
+            "🛡 *TezWeb Antispam Bot*\n\n"
+            "Assalomu alaykum! Men guruhingizni spam, havolalar, "
+            "rasm va videodan *24/7 himoya qilaman!*\n\n"
+            "✅ Spamchilarni avtomatik o'chiraman\n"
+            "✅ Havolalar va @username larni bloklash\n"
+            "✅ Foto va video yuborishni bloklash\n"
+            "✅ Qoidabuzarni guruhdan chiqaraman\n\n"
+            "📌 *Guruhingizda spam ko'p bo'lsa* — meni qo'shing, "
+            "barcha spamchilarni o'chirib tashlayman!\n\n"
+            "💬 Guruhingiz uchun maxsus so'zlar qo'shish yoki "
+            "sozlash uchun: @Shohdollar22 ga yozing"
         )
-    await update.message.reply_text(text, parse_mode="Markdown")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➕ Guruhga qo'shish", url=f"https://t.me/{bot_username}?startgroup=true")],
+            [InlineKeyboardButton("📢 Kanalimiz", url="https://t.me/tezweb_uz")],
+            [InlineKeyboardButton("💬 @Shohdollar22 ga yozish", url="https://t.me/Shohdollar22")],
+        ])
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -312,6 +352,81 @@ async def cmd_clearwords(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("🧹 Taqiqlangan so'zlar ro'yxati tozalandi.")
 
 
+
+
+async def cmd_addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Guruhni reklama ro'yxatiga qo'shish — guruhdan yuboring."""
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("Bu buyruqni guruhda yuboring.")
+        return
+    if not is_super_admin(update.effective_user.id):
+        return
+
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or str(chat_id)
+    GROUPS.add(chat_id)
+    save_groups(GROUPS)
+    logger.info("Guruh qo\'shildi: %s (%s)", chat_title, chat_id)
+    await update.message.reply_text(f"✅ *{chat_title}* reklama ro\'yxatiga qo\'shildi!", parse_mode="Markdown")
+
+
+async def cmd_removegroup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Guruhni reklama ro'yxatidan o'chirish."""
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("Bu buyruqni guruhda yuboring.")
+        return
+    if not is_super_admin(update.effective_user.id):
+        return
+
+    chat_id = update.effective_chat.id
+    chat_title = update.effective_chat.title or str(chat_id)
+    GROUPS.discard(chat_id)
+    save_groups(GROUPS)
+    await update.message.reply_text(f"🗑 *{chat_title}* ro\'yxatdan o\'chirildi.", parse_mode="Markdown")
+
+
+async def cmd_listgroups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reklama guruhlari ro'yxatini ko'rish — shaxsiy xabarda."""
+    if update.effective_chat.type != "private":
+        return
+    if not is_super_admin(update.effective_user.id):
+        return
+    if not GROUPS:
+        await update.message.reply_text("📋 Reklama guruhlari ro\'yxati bo\'sh.\n\nQo\'shish uchun guruhga boring va /addgroup yuboring.")
+        return
+    await update.message.reply_text(f"📋 Reklama guruhlari: {len(GROUPS)} ta\n\n" + "\n".join(f"• {g}" for g in GROUPS))
+
+
+async def send_promo(bot) -> None:
+    """Barcha guruhlarga reklama yuboradi."""
+    if not GROUPS:
+        logger.info("Reklama guruhlari yo\'q.")
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Guruhga qo\'shish", url=f"https://t.me/{bot.username}?startgroup=true")],
+        [InlineKeyboardButton("📢 @tezweb_uz", url="https://t.me/tezweb_uz")],
+    ])
+
+    text = (
+        "🛡 *Guruhingizda spam ko\'p bo\'lsa* — meni qo\'shing!\n\n"
+        "✅ Spamchilarni avtomatik o\'chiraman\n"
+        "✅ Havolalar va reklamani bloklash\n"
+        "✅ 24/7 ishlayman, hech narsa o\'tkazib yubormayman\n\n"
+        "👇 Qo\'shish uchun tugmani bosing:"
+    )
+
+    sent, failed = 0, 0
+    for chat_id in list(GROUPS):
+        try:
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=keyboard)
+            sent += 1
+        except Exception as e:
+            logger.error("Guruhga yuborib bo\'lmadi %s: %s", chat_id, e)
+            failed += 1
+
+    logger.info("Reklama yuborildi: %d ta, xato: %d ta", sent, failed)
+
 # ──────────────────────────────────────────────
 # Guruhda xabarlarni tekshirish
 # ──────────────────────────────────────────────
@@ -377,12 +492,28 @@ def main() -> None:
     app.add_handler(CommandHandler("listwords",  cmd_listwords))
     app.add_handler(CommandHandler("clearwords", cmd_clearwords))
 
+    app.add_handler(CommandHandler("addgroup",    cmd_addgroup))
+    app.add_handler(CommandHandler("removegroup", cmd_removegroup))
+    app.add_handler(CommandHandler("listgroups",  cmd_listgroups))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.PHOTO,                   handle_photo))
     app.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, handle_video))
 
+    # Jadval — 7:00 va 21:00 Toshkent vaqti (UTC+5 = 02:00 va 16:00 UTC)
+    job_queue = app.job_queue
+    job_queue.run_daily(lambda ctx: asyncio.create_task(send_promo(ctx.bot)),
+                        time=__import__('datetime').time(2, 0, 0))   # 7:00 Toshkent
+    job_queue.run_daily(lambda ctx: asyncio.create_task(send_promo(ctx.bot)),
+                        time=__import__('datetime').time(16, 0, 0))  # 21:00 Toshkent
+
     logger.info("✅ TezWeb Antispam Bot ishga tushdi!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
+
 
 
 if __name__ == "__main__":
