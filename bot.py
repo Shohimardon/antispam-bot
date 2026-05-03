@@ -474,6 +474,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     if update.effective_chat.type == "private":
         return
+    # Kanaldan kelgan xabarlarni o'tkazib yuborish
+    if update.effective_message and update.effective_message.sender_chat:
+        return
     if await is_admin_in_chat(update, context):
         return
     await delete_and_kick(update, context, "Guruhda rasm yuborish taqiqlangan")
@@ -483,6 +486,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not SETTINGS["block_videos"]:
         return
     if update.effective_chat.type == "private":
+        return
+    # Kanaldan kelgan xabarlarni o'tkazib yuborish
+    if update.effective_message and update.effective_message.sender_chat:
         return
     if await is_admin_in_chat(update, context):
         return
