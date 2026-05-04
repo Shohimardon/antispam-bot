@@ -33,6 +33,29 @@ GROUPS_FILE    = str(DATA_DIR / "groups.json")
 # Faqat shu ID'lar botni boshqara oladi
 ADMIN_IDS = {6038976942, 2018064843}
 
+def clean_text(text: str) -> str:
+    """Matndan ko'rinmas Unicode belgilarni olib tashlaydi."""
+    import unicodedata
+    # Ko'rinmas belgilar: zero-width space, zero-width joiner va boshqalar
+    invisible = [
+        '​',  # Zero Width Space
+        '‌',  # Zero Width Non-Joiner
+        '‍',  # Zero Width Joiner
+        '‎',  # Left-to-Right Mark
+        '‏',  # Right-to-Left Mark
+        '️',  # Variation Selector-16
+        '⁠',  # Word Joiner
+        '﻿',  # Zero Width No-Break Space
+        '­',  # Soft Hyphen
+        '͏',  # Combining Grapheme Joiner
+    ]
+    for char in invisible:
+        text = text.replace(char, '')
+    # Unicode normalizatsiya
+    text = unicodedata.normalize('NFKC', text)
+    return text.lower()
+
+
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO,
