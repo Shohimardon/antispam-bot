@@ -397,9 +397,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not user:
         return
     if user.id in WHITELIST:
+        logger.info("Whitelist: %s", user.id)
         return
     if await is_admin_in_chat(update, context):
+        logger.info("Admin, skip: %s", user.id)
         return
+
+    logger.info("Checking: %s | text: %s", user.id, text[:30])
 
     # Antiflood
     if SETTINGS.get("antiflood") and check_flood(chat_id, user.id):
@@ -849,7 +853,7 @@ def main() -> None:
                  time=dt.time(17, 0, 0))   # 22:00 Toshkent
     jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_report(ctx.bot)),
                  time=dt.time(18, 0, 0),   # 23:00 Toshkent
-                 days=(6,))                # Faqat yakshanba
+                 days=(6,))                # 6 = Yakshanba
 
     logger.info("✅ TezWeb Antispam Bot ishga tushdi!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
