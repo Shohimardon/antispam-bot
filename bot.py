@@ -174,7 +174,11 @@ def contains_keyword(text: str) -> bool:
     if not KEYWORDS:
         return False
     t = clean_text(text)
-    return any(kw in t for kw in KEYWORDS)
+    # Kalit so'zlarni ham tozalaymiz
+    for kw in KEYWORDS:
+        if clean_text(kw) in t:
+            return True
+    return False
 
 def is_arabic_or_chinese(text: str) -> bool:
     for char in text:
