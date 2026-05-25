@@ -234,7 +234,7 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
     )
 
     async def delete_notice():
-        await asyncio.sleep(100)
+        await asyncio.sleep(180)  # 3 daqiqa
         try:
             await notice.delete()
         except Exception:
@@ -628,7 +628,12 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     groups = stats.get("groups", {})
     sorted_groups = sorted(groups.items(), key=lambda x: x[1], reverse=True)[:5]
     for i, (gid, count) in enumerate(sorted_groups, 1):
-        text += f"{i}. `{gid}` — {count} ta\n"
+        try:
+            chat = await context.bot.get_chat(int(gid))
+            name = chat.title or gid
+        except Exception:
+            name = gid
+        text += f"{i}. {name} — {count} ta\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
@@ -742,7 +747,20 @@ async def cmd_listgroups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not GROUPS:
         await update.message.reply_text("Reklama guruhlari royxati bosh.\n\nQoshish: guruhga boring va /addgroup yuboring.")
         return
-    await update.message.reply_text(f"Reklama guruhlari: {len(GROUPS)} ta\n\n" + "\n".join(f"• {g}" for g in GROUPS))
+
+    lines = []
+    for chat_id in GROUPS:
+        try:
+            chat = await context.bot.get_chat(chat_id)
+            name = chat.title or str(chat_id)
+            username = f" @{chat.username}" if chat.username else ""
+            lines.append(f"• {name}{username}\n  ID: {chat_id}")
+        except Exception:
+            lines.append(f"• ID: {chat_id} (nom olinmadi)")
+
+    await update.message.reply_text(
+        f"Guruhlar: {len(GROUPS)} ta\n\n" + "\n\n".join(lines)
+    )
 
 
 # ──────────────────────────────────────────────
@@ -774,17 +792,54 @@ async def send_promo(bot):
 async def send_daily_report(bot):
     """Har kuni 22:00 da kunlik hisobot."""
     stats = load_stats()
+    groups = stats.get("groups", {})
+    sorted_groups = sorted(groups.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    top_text = ""
+    for i, (gid, count) in enumerate(sorted_groups, 1):
+        try:
+            chat = await bot.get_chat(int(gid))
+            name = chat.title or gid
+        except Exception:
+            name = gid
+        top_text += f"{i}. {name} — {count} ta\n"
+
     text = (
         f"📊 *Kunlik hisobot — {dt.date.today().isoformat()}*\n\n"
         f"🦠 Bugun kiklangan: *{stats.get('today', 0)}* ta spam\n"
+        f"📆 Bu hafta: *{stats.get('week', 0)}* ta spam\n"
         f"📈 Jami barcha vaqt: *{stats.get('total', 0)}* ta\n\n"
+        f"🏆 *Eng faol guruhlar:*\n{top_text}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"😤 Siz ham charchadingizmi uyatsiz spamlardan?\n"
+        f"Unda sizga faqat *TezWeb Antispam* yordam bera oladi!\n"
+        f"Guruhingizga qo'shing va admin qilib qo'ying 👇\n\n"
         f"tezweb.uz | @tezweb_uz"
     )
+
+    # Adminga yuborish
     for admin_id in ADMIN_IDS:
         try:
             await bot.send_message(chat_id=admin_id, text=text, parse_mode="Markdown")
         except Exception:
             pass
+
+    # Barcha guruhlarga yuborish va 3 daqiqadan so'ng o'chirish
+    bot_username = (await bot.get_me()).username
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Guruhga qo'shish", url=f"https://t.me/{bot_username}?startgroup=true")],
+        [InlineKeyboardButton("📢 @tezweb_uz", url="https://t.me/tezweb_uz")],
+    ])
+    for chat_id in list(GROUPS):
+        try:
+            msg = await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=keyboard)
+            await asyncio.sleep(180)
+            try:
+                await bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error("Hisobot xato %s: %s", chat_id, e)
 
 
 async def send_weekly_report(bot):
@@ -864,5 +919,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main() 
-
+    main()
