@@ -1,6 +1,15 @@
 """
 Telegram Antispam Bot — TezWeb.uz
 Barcha funksiyalar: antispam, antiflood, kapcha, whitelist, statistika, hisobotlar
+
+Xavfsizlik tuzatishlari (security-fixed):
+- Markdown-injection: foydalanuvchi ismi escape qilinadi (escape_markdown)
+- Kapcha endi haqiqatdan mute qiladi (restrict_chat_member), to'g'ri javobdan keyin unmute
+- Edited (tahrirlangan) xabarlar ham tekshiriladi (effective_message ishlatiladi)
+- Caption (rasm/video/fayl ostidagi matn) ham havola/so'zga tekshiriladi + ko'proq media turi
+- JSON faylga atomar yozish (os.replace) — buzilishdan himoya
+- Arab/CJK diapazonlari kengaytirildi
+- captcha_pending uchun xavfsiz .pop()
 """
 
 import json
@@ -13,12 +22,15 @@ import datetime as dt
 from pathlib import Path
 from collections import defaultdict
 
-from telegram import Update, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, ChatMember, ChatPermissions,
+    InlineKeyboardButton, InlineKeyboardMarkup,
+)
+from telegram.helpers import escape_markdown
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    ChatMemberHandler,
     ContextTypes,
     filters,
 )
@@ -45,6 +57,16 @@ logger = logging.getLogger(__name__)
 URL_REGEX     = re.compile(r'(https?://\S+|www\.\S+|t\.me/\S+)', re.IGNORECASE)
 MENTION_REGEX = re.compile(r'@[a-zA-Z0-9_]{4,}')
 
+# Kapcha ruxsatlari
+MUTED_PERMS = ChatPermissions(can_send_messages=False)
+UNMUTED_PERMS = ChatPermissions(
+    can_send_messages=True,
+    can_send_polls=True,
+    can_send_other_messages=True,
+    can_add_web_page_previews=True,
+    can_invite_users=True,
+)
+
 # Antiflood: {chat_id: {user_id: [timestamps]}}
 flood_tracker = defaultdict(lambda: defaultdict(list))
 
@@ -54,13 +76,26 @@ slowmode_tracker = defaultdict(dict)
 # Kapcha: {chat_id: {user_id: {"answer": int, "msg_id": int}}}
 captcha_pending = defaultdict(dict)
 
+# Background tasklar GC tomonidan o'chmasligi uchun
+_bg_tasks: set = set()
+
+def _spawn(coro):
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
+
+def md(text: str) -> str:
+    """Markdown (v1) uchun foydalanuvchi matnini xavfsiz qilish."""
+    return escape_markdown(text or "", version=1)
+
 # ──────────────────────────────────────────────
 # Matn tozalash
 # ──────────────────────────────────────────────
 
 def clean_text(text: str) -> str:
-    invisible = ['\u200b','\u200c','\u200d','\u200e','\u200f',
-                 '\ufe0f','\u2060','\ufeff','\u00ad','\u034f']
+    invisible = ['​','‌','‍','‎','‏',
+                 '️','⁠','﻿','­','͏']
     for char in invisible:
         text = text.replace(char, '')
     return unicodedata.normalize('NFKC', text).lower()
@@ -75,12 +110,25 @@ def load_json(path, default):
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
     except Exception:
-        pass
+        logger.exception("load_json buzildi: %s", path)
     return default
 
 def save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """Atomar yozish: tmp faylga yozib, keyin os.replace."""
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        logger.exception("save_json xato: %s", path)
+        try:
+            if Path(tmp).exists():
+                os.remove(tmp)
+        except Exception:
+            pass
 
 def load_keywords() -> set:
     return set(load_json(KEYWORDS_FILE, []))
@@ -174,19 +222,27 @@ def contains_keyword(text: str) -> bool:
     if not KEYWORDS:
         return False
     t = clean_text(text)
-    # Kalit so'zlarni ham tozalaymiz
     for kw in KEYWORDS:
         if clean_text(kw) in t:
             return True
     return False
 
 def is_arabic_or_chinese(text: str) -> bool:
+    ranges = (
+        (0x0600, 0x06FF),  # Arabic
+        (0x0750, 0x077F),  # Arabic Supplement
+        (0x08A0, 0x08FF),  # Arabic Extended-A
+        (0xFB50, 0xFDFF),  # Arabic Presentation Forms-A
+        (0xFE70, 0xFEFF),  # Arabic Presentation Forms-B
+        (0x4E00, 0x9FFF),  # CJK Unified
+        (0x3400, 0x4DBF),  # CJK Extension A
+        (0x3040, 0x30FF),  # Japanese kana
+    )
     for char in text:
         cp = ord(char)
-        if (0x0600 <= cp <= 0x06FF or   # Arabic
-            0x4E00 <= cp <= 0x9FFF or   # Chinese
-            0x3040 <= cp <= 0x30FF):    # Japanese
-            return True
+        for lo, hi in ranges:
+            if lo <= cp <= hi:
+                return True
     return False
 
 # ──────────────────────────────────────────────
@@ -196,15 +252,18 @@ def is_arabic_or_chinese(text: str) -> bool:
 async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, reason: str):
     chat = update.effective_chat
     user = update.effective_user
+    msg  = update.effective_message
     if not user:
         return
 
-    name = f"@{user.username}" if user.username else user.first_name
+    raw_name = f"@{user.username}" if user.username else (user.first_name or "user")
+    name = md(raw_name)
 
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
+    if msg:
+        try:
+            await msg.delete()
+        except Exception:
+            pass
 
     try:
         await context.bot.ban_chat_member(chat.id, user.id)
@@ -224,7 +283,7 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
         chat_id=chat.id,
         text=(
             f"🚫 *{name}*, siz guruh qoidalarini buzgansiz!\n"
-            f"📌 Sabab: {reason}\n"
+            f"📌 Sabab: {md(reason)}\n"
             f"👢 Siz guruhdan chiqarib yuborldingiz.\n\n"
             f"🛡 Guruhingizda spam ko'pmi? Meni qo'shing — "
             f"spamdan 24/7 himoya qilaman!"
@@ -240,11 +299,11 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
         except Exception:
             pass
 
-    asyncio.create_task(delete_notice())
-    logger.info("Kicked: %s | %s | %s", name, chat.title, reason)
+    _spawn(delete_notice())
+    logger.info("Kicked: %s | %s | %s", raw_name, chat.title, reason)
 
 # ──────────────────────────────────────────────
-# Antiflood tekshirish
+# Antiflood / Slowmode tekshirish
 # ──────────────────────────────────────────────
 
 def check_flood(chat_id: int, user_id: int) -> bool:
@@ -258,10 +317,6 @@ def check_flood(chat_id: int, user_id: int) -> bool:
     msgs.append(now)
     flood_tracker[chat_id][user_id] = msgs
     return len(msgs) >= limit
-
-# ──────────────────────────────────────────────
-# Slowmode tekshirish
-# ──────────────────────────────────────────────
 
 def check_slowmode(chat_id: int, user_id: int) -> bool:
     import time
@@ -284,17 +339,17 @@ async def send_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
     wrong1 = answer + random.choice([-2, -1, 1, 2])
     wrong2 = answer + random.choice([-3, 3, -4, 4])
 
-    buttons = [a + b, wrong1, wrong2]
-    random.shuffle(buttons)
+    options = [answer, wrong1, wrong2]
+    random.shuffle(options)
 
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton(str(b), callback_data=f"cap_{user_id}_{b}")
-        for b in buttons
+        InlineKeyboardButton(str(opt), callback_data=f"cap_{user_id}_{opt}")
+        for opt in options
     ]])
 
     msg = await context.bot.send_message(
         chat_id=chat_id,
-        text=f"👋 Xush kelibsiz, {name}!\n\n"
+        text=f"👋 Xush kelibsiz, {md(name)}!\n\n"
              f"🤖 Siz bot emasligingizni isbotlang:\n"
              f"*{a} + {b} = ?*\n\n"
              f"⏰ 60 soniya ichida javob bering!",
@@ -307,15 +362,15 @@ async def send_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
     async def captcha_timeout():
         await asyncio.sleep(60)
         if user_id in captcha_pending.get(chat_id, {}):
+            captcha_pending.get(chat_id, {}).pop(user_id, None)
             try:
                 await context.bot.ban_chat_member(chat_id, user_id)
                 await context.bot.unban_chat_member(chat_id, user_id)
                 await msg.delete()
-                del captcha_pending[chat_id][user_id]
             except Exception:
                 pass
 
-    asyncio.create_task(captcha_timeout())
+    _spawn(captcha_timeout())
 
 # ──────────────────────────────────────────────
 # Yangi a'zo
@@ -325,14 +380,19 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in (update.message.new_chat_members or []):
         if member.is_bot:
             continue
-        name    = f"@{member.username}" if member.username else member.first_name
+        name    = f"@{member.username}" if member.username else (member.first_name or "user")
         chat_id = update.effective_chat.id
 
         if SETTINGS.get("captcha"):
+            # Avval mute qilamiz — kapcha haqiqatdan ishlashi uchun
+            try:
+                await context.bot.restrict_chat_member(chat_id, member.id, permissions=MUTED_PERMS)
+            except Exception:
+                logger.warning("Mute qilolmadim (admin huquqi yo'qmi?): %s", member.id)
             await send_captcha(update, context, member.id, chat_id, name)
         else:
             text = (
-                f"👋 Xush kelibsiz, {name}!\n\n"
+                f"👋 Xush kelibsiz, {md(name)}!\n\n"
                 f"Bu *TezWeb.uz* rasmiy muhokama guruhimiz.\n\n"
                 f"❓ Savol berish uchun xabar oxiriga *?* qo'ying\n"
                 f"yoki botning xabariga reply qiling.\n\n"
@@ -366,105 +426,106 @@ async def handle_captcha_callback(update: Update, context: ContextTypes.DEFAULT_
 
     if answer == pending["answer"]:
         await query.answer("✅ To'g'ri! Guruhga xush kelibsiz!")
+        captcha_pending.get(chat_id, {}).pop(user_id, None)
+        # Unmute — yozishga ruxsat qaytaramiz
+        try:
+            await context.bot.restrict_chat_member(chat_id, user_id, permissions=UNMUTED_PERMS)
+        except Exception:
+            logger.warning("Unmute qilolmadim: %s", user_id)
         try:
             await query.message.delete()
         except Exception:
             pass
-        del captcha_pending[chat_id][user_id]
     else:
         await query.answer("❌ Noto'g'ri! Siz bot sifatida aniqlangiz.")
+        captcha_pending.get(chat_id, {}).pop(user_id, None)
         try:
             await context.bot.ban_chat_member(chat_id, user_id)
             await context.bot.unban_chat_member(chat_id, user_id)
             await query.message.delete()
         except Exception:
             pass
-        if user_id in captcha_pending.get(chat_id, {}):
-            del captcha_pending[chat_id][user_id]
 
 # ──────────────────────────────────────────────
-# Xabarlarni tekshirish
+# Xabarlarni tekshirish (umumiy pipeline)
 # ──────────────────────────────────────────────
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return
-    if update.effective_chat.type == "private":
-        return
-    if update.effective_message and update.effective_message.sender_chat:
-        return
-
-    user    = update.effective_user
-    chat_id = update.effective_chat.id
-    text    = update.message.text
-
+async def _should_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    chat = update.effective_chat
+    if chat is None or chat.type == "private":
+        return True
+    msg = update.effective_message
+    if msg is None:
+        return True
+    if msg.sender_chat:
+        return True
+    user = update.effective_user
     if not user:
-        return
+        return True
     if user.id in WHITELIST:
-        logger.info("Whitelist: %s", user.id)
-        return
+        return True
     if await is_admin_in_chat(update, context):
-        logger.info("Admin, skip: %s", user.id)
-        return
+        return True
+    return False
 
-    logger.info("Checking: %s | text: %s", user.id, text[:30])
+async def moderate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Matn yoki caption ustidan spam-tekshiruv. Chora ko'rilsa True."""
+    msg = update.effective_message
+    if msg is None:
+        return False
+    content = msg.text or msg.caption or ""
+    chat_id = update.effective_chat.id
+    user    = update.effective_user
 
     # Antiflood
     if SETTINGS.get("antiflood") and check_flood(chat_id, user.id):
         await delete_and_kick(update, context, "Flood (juda ko'p xabar)")
-        return
+        return True
 
     # Slowmode
     if SETTINGS.get("slowmode") and check_slowmode(chat_id, user.id):
         try:
-            await update.message.delete()
+            await msg.delete()
         except Exception:
             pass
-        return
+        return True
 
-    # Arabic/Chinese bloklash
-    if SETTINGS.get("block_arabic") and is_arabic_or_chinese(text):
-        await delete_and_kick(update, context, "Taqiqlangan til (arab/xitoy)")
-        return
-
-    # Havolalar
-    if SETTINGS.get("block_links"):
-        if URL_REGEX.search(text) or MENTION_REGEX.search(text):
+    if content:
+        # Arabic/Chinese bloklash
+        if SETTINGS.get("block_arabic") and is_arabic_or_chinese(content):
+            await delete_and_kick(update, context, "Taqiqlangan til (arab/xitoy)")
+            return True
+        # Havolalar
+        if SETTINGS.get("block_links") and (URL_REGEX.search(content) or MENTION_REGEX.search(content)):
             await delete_and_kick(update, context, "Xabar ichida havola (link) bor")
-            return
+            return True
+        # Kalit so'zlar
+        if contains_keyword(content):
+            await delete_and_kick(update, context, "Taqiqlangan so'z aniqlandi")
+            return True
 
-    # Kalit sozlar
-    if contains_keyword(text):
-        await delete_and_kick(update, context, "Taqiqlangan so'z aniqlandi")
+    return False
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _should_skip(update, context):
+        return
+    await moderate(update, context)
+
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await _should_skip(update, context):
+        return
+    msg = update.effective_message
+
+    # Tur bo'yicha qattiq bloklash
+    if msg.photo and SETTINGS.get("block_photos"):
+        await delete_and_kick(update, context, "Guruhda rasm yuborish taqiqlangan")
+        return
+    if (msg.video or msg.video_note or msg.animation) and SETTINGS.get("block_videos"):
+        await delete_and_kick(update, context, "Guruhda video yuborish taqiqlangan")
         return
 
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not SETTINGS.get("block_photos"):
-        return
-    if update.effective_chat.type == "private":
-        return
-    if update.effective_message and update.effective_message.sender_chat:
-        return
-    if update.effective_user and update.effective_user.id in WHITELIST:
-        return
-    if await is_admin_in_chat(update, context):
-        return
-    await delete_and_kick(update, context, "Guruhda rasm yuborish taqiqlangan")
-
-
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not SETTINGS.get("block_videos"):
-        return
-    if update.effective_chat.type == "private":
-        return
-    if update.effective_message and update.effective_message.sender_chat:
-        return
-    if update.effective_user and update.effective_user.id in WHITELIST:
-        return
-    if await is_admin_in_chat(update, context):
-        return
-    await delete_and_kick(update, context, "Guruhda video yuborish taqiqlangan")
+    # Bloklanmagan media bo'lsa — caption ichidagi havola/so'zni tekshiramiz
+    await moderate(update, context)
 
 # ──────────────────────────────────────────────
 # Komandalar
@@ -633,7 +694,7 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name = chat.title or gid
         except Exception:
             name = gid
-        text += f"{i}. {name} — {count} ta\n"
+        text += f"{i}. {md(str(name))} — {count} ta\n"
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
@@ -725,7 +786,7 @@ async def cmd_addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_title = update.effective_chat.title or str(chat_id)
     GROUPS.add(chat_id)
     save_groups(GROUPS)
-    await update.message.reply_text(f"✅ *{chat_title}* reklama royxatiga qoshildi!", parse_mode="Markdown")
+    await update.message.reply_text(f"✅ *{md(chat_title)}* reklama royxatiga qoshildi!", parse_mode="Markdown")
 
 
 async def cmd_removegroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -738,7 +799,7 @@ async def cmd_removegroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_title = update.effective_chat.title or str(chat_id)
     GROUPS.discard(chat_id)
     save_groups(GROUPS)
-    await update.message.reply_text(f"Ochirildi: *{chat_title}*", parse_mode="Markdown")
+    await update.message.reply_text(f"Ochirildi: *{md(chat_title)}*", parse_mode="Markdown")
 
 
 async def cmd_listgroups(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -802,7 +863,7 @@ async def send_daily_report(bot):
             name = chat.title or gid
         except Exception:
             name = gid
-        top_text += f"{i}. {name} — {count} ta\n"
+        top_text += f"{i}. {md(str(name))} — {count} ta\n"
 
     text = (
         f"📊 *Kunlik hisobot — {dt.date.today().isoformat()}*\n\n"
@@ -892,11 +953,18 @@ def main() -> None:
     app.add_handler(CommandHandler("removegroup",cmd_removegroup))
     app.add_handler(CommandHandler("listgroups", cmd_listgroups))
 
-    # Xabarlar
+    # Yangi a'zo
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_member))
+
+    # Matn (yangi + tahrirlangan — effective_message ishlatilgani uchun ikkalasi ham)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.VIDEO | filters.VIDEO_NOTE, handle_video))
+
+    # Media (caption ham tekshiriladi)
+    media_filter = (
+        filters.PHOTO | filters.VIDEO | filters.VIDEO_NOTE | filters.ANIMATION |
+        filters.Document.ALL | filters.AUDIO | filters.VOICE
+    )
+    app.add_handler(MessageHandler(media_filter, handle_media))
 
     # Callback (kapcha)
     from telegram.ext import CallbackQueryHandler
@@ -904,13 +972,13 @@ def main() -> None:
 
     # Jadval
     jq = app.job_queue
-    jq.run_daily(lambda ctx: asyncio.create_task(send_promo(ctx.bot)),
+    jq.run_daily(lambda ctx: _spawn(send_promo(ctx.bot)),
                  time=dt.time(2, 0, 0))    # 7:00 Toshkent
-    jq.run_daily(lambda ctx: asyncio.create_task(send_promo(ctx.bot)),
+    jq.run_daily(lambda ctx: _spawn(send_promo(ctx.bot)),
                  time=dt.time(16, 0, 0))   # 21:00 Toshkent
-    jq.run_daily(lambda ctx: asyncio.create_task(send_daily_report(ctx.bot)),
+    jq.run_daily(lambda ctx: _spawn(send_daily_report(ctx.bot)),
                  time=dt.time(17, 0, 0))   # 22:00 Toshkent
-    jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_report(ctx.bot)),
+    jq.run_daily(lambda ctx: _spawn(send_weekly_report(ctx.bot)),
                  time=dt.time(18, 0, 0),   # 23:00 Toshkent
                  days=(6,))                # 6 = Yakshanba
 
