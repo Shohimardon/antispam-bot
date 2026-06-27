@@ -67,6 +67,12 @@ UNMUTED_PERMS = ChatPermissions(
     can_invite_users=True,
 )
 
+# APK / xavfli ilova fayllari kengaytmalari
+APK_EXTS = (".apk", ".apks", ".xapk", ".aab")
+
+# "Meni admin qiling" xabari uchun throttle: {chat_id: last_ts}
+recruit_throttle: dict = {}
+
 # Antiflood: {chat_id: {user_id: [timestamps]}}
 flood_tracker = defaultdict(lambda: defaultdict(list))
 
@@ -227,6 +233,15 @@ def contains_keyword(text: str) -> bool:
             return True
     return False
 
+def is_apk(msg) -> bool:
+    """Xabarda APK/xavfli ilova fayli bormi?"""
+    doc = getattr(msg, "document", None)
+    if not doc:
+        return False
+    fn = (doc.file_name or "").lower()
+    mt = (doc.mime_type or "").lower()
+    return fn.endswith(APK_EXTS) or "android.package" in mt or "vnd.android" in mt
+
 def is_arabic_or_chinese(text: str) -> bool:
     ranges = (
         (0x0600, 0x06FF),  # Arabic
@@ -249,6 +264,50 @@ def is_arabic_or_chinese(text: str) -> bool:
 # Kik va o'chirish
 # ──────────────────────────────────────────────
 
+async def bot_can_moderate(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
+    """Bot guruhda admin va ban/o'chirish huquqiga egami?"""
+    try:
+        me = await context.bot.get_chat_member(chat_id, context.bot.id)
+    except Exception:
+        return False
+    if me.status != ChatMember.ADMINISTRATOR:
+        return False
+    return bool(getattr(me, "can_delete_messages", False)
+                and getattr(me, "can_restrict_members", False))
+
+
+async def send_recruit_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    """Bot admin bo'lmaganda: 'meni admin qiling' chaqirig'i (5 daqiqada 1 marta)."""
+    import time
+    now = time.time()
+    if now - recruit_throttle.get(chat_id, 0) < 300:   # spam bo'lmasligi uchun
+        return
+    recruit_throttle[chat_id] = now
+
+    bot_username = context.bot.username
+    admin_url = (
+        f"https://t.me/{bot_username}"
+        f"?startgroup=true&admin=delete_messages+restrict_members"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👮 Meni admin qiling", url=admin_url)],
+        [InlineKeyboardButton("📢 @tezweb_uz", url="https://t.me/tezweb_uz")],
+    ])
+    text = (
+        "⚠️ *Diqqat!* Guruhda spam yoki APK fayl aniqlandi, "
+        "lekin menda o'chirish huquqi yo'q.\n\n"
+        "👮 *Meni admin qiling* — shunda men:\n"
+        "✅ Bunday foydalanuvchilarni avtomatik chiqaraman\n"
+        "✅ APK (virusli ilova) fayllarni bloklayman\n"
+        "✅ Uyatsiz so'zli profillardan himoya qilaman\n\n"
+        "👇 Admin qilish uchun tugmani bosing:"
+    )
+    try:
+        await context.bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=keyboard)
+    except Exception as e:
+        logger.error("Recruit xabar xato %s: %s", chat_id, e)
+
+
 async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, reason: str):
     chat = update.effective_chat
     user = update.effective_user
@@ -256,8 +315,15 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
     if not user:
         return
 
-    raw_name = f"@{user.username}" if user.username else (user.first_name or "user")
-    name = md(raw_name)
+    # Bot admin emas (yoki huquqi yetarli emas) — kik qila olmaymiz.
+    # Buning o'rniga guruhga "meni admin qiling" chaqirig'ini yuboramiz.
+    if not await bot_can_moderate(context, chat.id):
+        await send_recruit_message(context, chat.id)
+        return
+
+    display_name = md(user.first_name or "user")
+    username     = f"@{user.username}" if user.username else "—"
+    uid          = user.id
 
     if msg:
         try:
@@ -279,12 +345,30 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
         [InlineKeyboardButton("📢 @tezweb_uz", url="https://t.me/tezweb_uz")],
     ])
 
+    if "APK" in reason:
+        # APK uchun — jim banlash emas, balki ogohlantirish/ma'rifat
+        body = (
+            f"🚨 *DIQQAT! VIRUSLI FAYL!* 🚨\n\n"
+            f"❌ Yuqorida *APK fayl* yuborildi — bu VIRUS bo'lishi mumkin!\n"
+            f"📵 *Hech qachon .apk fayllarni o'rnatmang* —\n"
+            f"aks holda Telegram va bank kartangiz *o'g'irlanadi!*\n\n"
+            f"⚠️ Никогда не устанавливайте .apk из чатов — это угон аккаунта!\n\n"
+            f"👢 Yuboruvchi chiqarib yuborildi:\n"
+            f"👤 {md(username)}  |  🆔 `{uid}`"
+        )
+    else:
+        body = (
+            f"🚫 *{display_name}* guruh qoidalarini buzdi!\n"
+            f"👤 Username: {md(username)}\n"
+            f"🆔 ID: `{uid}`\n"
+            f"📌 Sabab: {md(reason)}\n"
+            f"👢 Foydalanuvchi guruhdan chiqarib yuborildi."
+        )
+
     notice = await context.bot.send_message(
         chat_id=chat.id,
         text=(
-            f"🚫 *{name}*, siz guruh qoidalarini buzgansiz!\n"
-            f"📌 Sabab: {md(reason)}\n"
-            f"👢 Siz guruhdan chiqarib yuborldingiz.\n\n"
+            f"{body}\n\n"
             f"🛡 Guruhingizda spam ko'pmi? Meni qo'shing — "
             f"spamdan 24/7 himoya qilaman!"
         ),
@@ -293,14 +377,14 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
     )
 
     async def delete_notice():
-        await asyncio.sleep(180)  # 3 daqiqa
+        await asyncio.sleep(300)  # 5 daqiqa
         try:
             await notice.delete()
         except Exception:
             pass
 
     _spawn(delete_notice())
-    logger.info("Kicked: %s | %s | %s", raw_name, chat.title, reason)
+    logger.info("Kicked: @%s (id=%s) | %s | %s", user.username, uid, chat.title, reason)
 
 # ──────────────────────────────────────────────
 # Antiflood / Slowmode tekshirish
@@ -477,6 +561,12 @@ async def moderate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat_id = update.effective_chat.id
     user    = update.effective_user
 
+    # Uyatsiz so'zli profil (ism / familiya / username qora ro'yxatda bo'lsa)
+    profile = f"{user.first_name or ''} {user.last_name or ''} {user.username or ''}"
+    if contains_keyword(profile):
+        await delete_and_kick(update, context, "Uyatsiz so'zli profil")
+        return True
+
     # Antiflood
     if SETTINGS.get("antiflood") and check_flood(chat_id, user.id):
         await delete_and_kick(update, context, "Flood (juda ko'p xabar)")
@@ -515,6 +605,11 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await _should_skip(update, context):
         return
     msg = update.effective_message
+
+    # APK / xavfli ilova fayli — sozlamadan qat'i nazar, HAR DOIM darhol ban
+    if is_apk(msg):
+        await delete_and_kick(update, context, "APK fayl (xavfli ilova) yuborildi")
+        return
 
     # Tur bo'yicha qattiq bloklash
     if msg.photo and SETTINGS.get("block_photos"):
