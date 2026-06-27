@@ -54,6 +54,33 @@ ADMIN_IDS = {6038976942, 2018064843}
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# httpx har bir so'rov URL'ini (ichida token bor!) INFO darajada log qiladi —
+# uni WARNING ga ko'taramiz, shunda token logga umuman tushmaydi.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+class _RedactToken(logging.Filter):
+    """Qo'shimcha himoya: token biror joyda logga tushsa ham — yashiramiz."""
+    def filter(self, record):
+        if not BOT_TOKEN:
+            return True
+        try:
+            if isinstance(record.msg, str) and BOT_TOKEN in record.msg:
+                record.msg = record.msg.replace(BOT_TOKEN, "***TOKEN***")
+            if record.args:
+                record.args = tuple(
+                    a.replace(BOT_TOKEN, "***TOKEN***") if isinstance(a, str) else a
+                    for a in record.args
+                )
+        except Exception:
+            pass
+        return True
+
+
+for _h in logging.getLogger().handlers:
+    _h.addFilter(_RedactToken())
+
 URL_REGEX     = re.compile(r'(https?://\S+|www\.\S+|t\.me/\S+)', re.IGNORECASE)
 MENTION_REGEX = re.compile(r'@[a-zA-Z0-9_]{4,}')
 
