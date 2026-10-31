@@ -1,1 +1,1 @@
-worker: python bot.py
+worker: python antispam_bot.py
