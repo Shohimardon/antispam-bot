@@ -48,6 +48,7 @@ GROUPS_FILE    = str(DATA_DIR / "groups.json")
 STATS_FILE     = str(DATA_DIR / "stats.json")
 WHITELIST_FILE = str(DATA_DIR / "whitelist.json")
 SLOWMODE_FILE  = str(DATA_DIR / "slowmode.json")
+BLACKLIST_FILE = str(DATA_DIR / "blacklist.json")
 
 ADMIN_IDS = {6038976942, 2018064843}
 
@@ -84,6 +85,26 @@ for _h in logging.getLogger().handlers:
 URL_REGEX     = re.compile(r'(https?://\S+|www\.\S+|t\.me/\S+)', re.IGNORECASE)
 MENTION_REGEX = re.compile(r'@[a-zA-Z0-9_]{4,}')
 
+# ── Bot-reklama / referal-farm spam («/start 71 @q1ifr54cmjbot @fnf4c0cbot …») ──
+# Begona botlarni reklama qilish: bu eng xavfli spam (reyd-chaqiriq) — darhol QORA RO'YXAT.
+BOTREF_REGEX   = re.compile(r'(?:@|t\.me/)[a-z0-9_]{2,}bot\b', re.IGNORECASE)  # @...bot yoki t.me/...bot
+STARTREF_REGEX = re.compile(r'(/start\s+\S|[?&]start(?:group)?=)', re.IGNORECASE)  # /start <kod> yoki ?start=
+
+
+def is_bot_promo_spam(text: str) -> bool:
+    """Bot-reklama / referal-farm spam aniqlash.
+    • «/start <kod> @xxxbot» — referal deep-link + bot = aniq spam;
+    • 2+ xil @...bot — ommaviy bot reklama.
+    Oddiy bitta @bot (kod yoki boshqa botsiz) bu funksiyani ishga tushirmaydi."""
+    if not text:
+        return False
+    bots = {m.group(0).lower() for m in BOTREF_REGEX.finditer(text)}
+    if not bots:
+        return False
+    if STARTREF_REGEX.search(text):
+        return True            # /start <kod> + @bot = referal-farm
+    return len(bots) >= 2      # 2+ xil @...bot = ommaviy bot reklama
+
 # Kapcha ruxsatlari
 MUTED_PERMS = ChatPermissions(can_send_messages=False)
 UNMUTED_PERMS = ChatPermissions(
@@ -108,6 +129,25 @@ slowmode_tracker = defaultdict(dict)
 
 # Kapcha: {chat_id: {user_id: {"answer": int, "msg_id": int}}}
 captcha_pending = defaultdict(dict)
+
+# ── Antireyd ──
+# Yangi a'zolar oqimi (reyd-detektor): {chat_id: [timestamps]}
+join_tracker = defaultdict(list)
+# Muzlatilgan chatlar: {chat_id: True}
+locked_chats: dict = {}
+# "Kik haqida" bildirishnomalar throttle (reyd paytida bot o'zi flood qilmasin): {chat_id: last_ts}
+notice_throttle: dict = {}
+
+# Chatni muzlatish/ochish uchun guruhning default ruxsatlari
+LOCKED_PERMS = ChatPermissions(
+    can_send_messages=False, can_send_polls=False,
+    can_send_other_messages=False, can_add_web_page_previews=False,
+)
+OPEN_PERMS = ChatPermissions(
+    can_send_messages=True, can_send_polls=True,
+    can_send_other_messages=True, can_add_web_page_previews=True,
+    can_invite_users=True,
+)
 
 # Background tasklar GC tomonidan o'chmasligi uchun
 _bg_tasks: set = set()
@@ -176,6 +216,9 @@ def load_settings() -> dict:
         "captcha": False, "slowmode": False,
         "block_arabic": False, "slowmode_seconds": 60,
         "flood_limit": 5, "flood_seconds": 10,
+        # Antireyd: keskin a'zolar oqimi → chatni avtomatik muzlatish
+        "antiraid": True, "raid_join_threshold": 8, "raid_join_window": 30,
+        "raid_autounlock_min": 10,
     }
     saved = load_json(SETTINGS_FILE, {})
     defaults.update(saved)
@@ -202,10 +245,18 @@ def load_whitelist() -> set:
 def save_whitelist(w: set):
     save_json(WHITELIST_FILE, list(w))
 
+def load_blacklist() -> set:
+    # JSON kalitlari string bo'lishi mumkin — har doim int ga keltiramiz
+    return {int(u) for u in load_json(BLACKLIST_FILE, [])}
+
+def save_blacklist(b: set):
+    save_json(BLACKLIST_FILE, list(b))
+
 KEYWORDS  = load_keywords()
 SETTINGS  = load_settings()
 GROUPS    = load_groups()
 WHITELIST = load_whitelist()
+BLACKLIST = load_blacklist()   # bot-reklama spamchilar — butunlay bloklangan user id lar
 
 # ──────────────────────────────────────────────
 # Statistika
@@ -335,7 +386,10 @@ async def send_recruit_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int)
         logger.error("Recruit xabar xato %s: %s", chat_id, e)
 
 
-async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, reason: str):
+async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, reason: str,
+                          hard_ban: bool = False, red: bool = False):
+    """hard_ban=True — butunlay bloklash (unban QILMAYMIZ, qayta kira olmaydi = QORA RO'YXAT).
+    red=True — 🔴 qizil ogohlantirish + adminlarga shaxsiy signal."""
     chat = update.effective_chat
     user = update.effective_user
     msg  = update.effective_message
@@ -360,7 +414,9 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
 
     try:
         await context.bot.ban_chat_member(chat.id, user.id)
-        await context.bot.unban_chat_member(chat.id, user.id)
+        if not hard_ban:
+            await context.bot.unban_chat_member(chat.id, user.id)   # oddiy kik — qayta kira oladi
+        # hard_ban: unban YO'Q → butunlay bloklangan (qora ro'yxat)
     except Exception:
         pass
 
@@ -383,6 +439,17 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
             f"👢 Yuboruvchi chiqarib yuborildi:\n"
             f"👤 {md(username)}  |  🆔 `{uid}`"
         )
+    elif red:
+        # 🔴 Bot-reklama spam — qizil belgi + butunlay bloklandi (qora ro'yxat)
+        body = (
+            f"🔴 *QORA RO'YXATGA TUSHDI!* 🔴\n\n"
+            f"🚫 *Bot-reklama spam* aniqlandi — begona botlar reklama qilindi.\n"
+            f"Bu reyd-chaqiriq, shuning uchun user *butunlay* bloklandi.\n\n"
+            f"👤 *{display_name}*  |  {md(username)}\n"
+            f"🆔 ID: `{uid}`\n"
+            f"⛔️ Guruhga *qayta kira olmaydi*.\n"
+            f"↩️ Xato bo'lsa, admin: `/blacklist remove {uid}`"
+        )
     else:
         body = (
             f"🚫 *{display_name}* guruh qoidalarini buzdi!\n"
@@ -392,26 +459,50 @@ async def delete_and_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, re
             f"👢 Foydalanuvchi guruhdan chiqarib yuborildi."
         )
 
-    notice = await context.bot.send_message(
-        chat_id=chat.id,
-        text=(
-            f"{body}\n\n"
-            f"🛡 Guruhingizda spam ko'pmi? Meni qo'shing — "
-            f"spamdan 24/7 himoya qilaman!"
-        ),
-        parse_mode="Markdown",
-        reply_markup=keyboard
-    )
+    # Reyd paytida (chat muzlatilgan) yoki ketma-ket banlarda bildirishnoma YUBORMAYMIZ —
+    # aks holda bot o'zi chatni flood qiladi va Telegram limitiga (429) uriladi.
+    import time
+    _now = time.time()
+    if (chat.id not in locked_chats) and (_now - notice_throttle.get(chat.id, 0) >= 12):
+        notice_throttle[chat.id] = _now
+        notice = await context.bot.send_message(
+            chat_id=chat.id,
+            text=(
+                f"{body}\n\n"
+                f"🛡 Guruhingizda spam ko'pmi? Meni qo'shing — "
+                f"spamdan 24/7 himoya qilaman!"
+            ),
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
 
-    async def delete_notice():
-        await asyncio.sleep(300)  # 5 daqiqa
-        try:
-            await notice.delete()
-        except Exception:
-            pass
+        async def delete_notice():
+            await asyncio.sleep(300)  # 5 daqiqa
+            try:
+                await notice.delete()
+            except Exception:
+                pass
 
-    _spawn(delete_notice())
-    logger.info("Kicked: @%s (id=%s) | %s | %s", user.username, uid, chat.title, reason)
+        _spawn(delete_notice())
+
+    # Qora ro'yxat hodisasi — adminlarga shaxsiy 🔴 signal (guruh xabari o'chsa ham qoladi)
+    if red:
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    admin_id,
+                    f"🔴 *Qora ro'yxat* — «{md(chat.title or str(chat.id))}»\n"
+                    f"👤 {display_name}  |  {md(username)}\n"
+                    f"🆔 `{uid}`\n"
+                    f"📌 {md(reason)}\n"
+                    f"↩️ Qaytarish: `/blacklist remove {uid}`",
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+
+    logger.info("Kicked: @%s (id=%s) | %s | %s%s",
+                user.username, uid, chat.title, reason, " [HARD-BAN/ЧС]" if hard_ban else "")
 
 # ──────────────────────────────────────────────
 # Antiflood / Slowmode tekshirish
@@ -488,11 +579,36 @@ async def send_captcha(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
 # ──────────────────────────────────────────────
 
 async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for member in (update.message.new_chat_members or []):
-        if member.is_bot:
+    chat_id = update.effective_chat.id
+    humans = [m for m in (update.message.new_chat_members or []) if not m.is_bot]
+
+    # ── ANTIREYD: a'zolar oqimini kuzatamiz; keskin sakrash = reyd → chatni muzlatamiz ──
+    if SETTINGS.get("antiraid") and humans:
+        import time
+        now = time.time()
+        window = SETTINGS.get("raid_join_window", 30)
+        jt = [t for t in join_tracker[chat_id] if now - t < window]
+        jt.extend([now] * len(humans))
+        join_tracker[chat_id] = jt
+        if len(jt) >= SETTINGS.get("raid_join_threshold", 8) and chat_id not in locked_chats:
+            await trigger_raid_lock(context, chat_id, len(jt))
+            return   # reyd aniqlandi: salom/kapcha yubormaymiz, chat muzlatildi
+
+    if chat_id in locked_chats:
+        return   # chat muzlatilgan (reyd davom etmoqda) — yangilarga salom/kapcha yubormaymiz
+
+    for member in humans:
+        # Qora ro'yxatdagi odam qayta kirmoqchimi? — salom/kapcha yo'q, darhol chiqaramiz
+        if member.id in BLACKLIST:
+            if await bot_can_moderate(context, chat_id):
+                try:
+                    await context.bot.ban_chat_member(chat_id, member.id)   # hard-ban, unban yo'q
+                except Exception:
+                    pass
+            logger.info("Qora ro'yxatdagi user %s kirishda bloklandi (%s)", member.id, chat_id)
             continue
-        name    = f"@{member.username}" if member.username else (member.first_name or "user")
-        chat_id = update.effective_chat.id
+
+        name = f"@{member.username}" if member.username else (member.first_name or "user")
 
         if SETTINGS.get("captcha"):
             # Avval mute qilamiz — kapcha haqiqatdan ishlashi uchun
@@ -511,6 +627,104 @@ async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🌐 tezweb.uz | 📩 @Shohdollar22"
             )
             await context.bot.send_message(chat_id, text, parse_mode="Markdown")
+
+# ──────────────────────────────────────────────
+# Antireyd: chatni muzlatish / ochish
+# ──────────────────────────────────────────────
+
+async def lock_chat(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
+    """Guruhni muzlatadi: adminlardan tashqari hamma yoza olmaydi."""
+    try:
+        await context.bot.set_chat_permissions(chat_id, LOCKED_PERMS)
+        locked_chats[chat_id] = True
+        return True
+    except Exception:
+        logger.exception("lock_chat xato: %s", chat_id)
+        return False
+
+
+async def unlock_chat(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> bool:
+    """Guruhni ochadi: yozishga ruxsat qaytaradi."""
+    try:
+        await context.bot.set_chat_permissions(chat_id, OPEN_PERMS)
+        locked_chats.pop(chat_id, None)
+        return True
+    except Exception:
+        logger.exception("unlock_chat xato: %s", chat_id)
+        return False
+
+
+async def trigger_raid_lock(context: ContextTypes.DEFAULT_TYPE, chat_id: int, joined: int):
+    """Reyd aniqlandi → avto-muzlatish + adminlarga signal + avto-ochish."""
+    if not await bot_can_moderate(context, chat_id):
+        await send_recruit_message(context, chat_id)   # admin huquqi yo'q — chaqiramiz
+        return
+    if not await lock_chat(context, chat_id):
+        return
+    logger.warning("ANTIREYD: chat %s muzlatildi (%s a'zo oqimi)", chat_id, joined)
+    try:
+        title = (await context.bot.get_chat(chat_id)).title or str(chat_id)
+    except Exception:
+        title = str(chat_id)
+    mins = SETTINGS.get("raid_autounlock_min", 10)
+    # Guruhga BITTA qisqa ogohlantirish (flood emas)
+    try:
+        await context.bot.send_message(
+            chat_id,
+            "🛡 *Reyd aniqlandi — guruh vaqtincha muzlatildi.*\n"
+            "Tez orada avtomatik ochiladi. Adminlar /unlock bilan qo'lda ocha oladi.",
+            parse_mode="Markdown",
+        )
+    except Exception:
+        pass
+    # Adminlarga shaxsiy signal
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(
+                admin_id,
+                f"⚠️ *REYD!* «{md(str(title))}» guruhiga {joined}+ a'zo qisqa vaqtda kirdi.\n"
+                f"Guruh *muzlatildi*. {mins} daqiqadan keyin avto-ochiladi (yoki /unlock).",
+                parse_mode="Markdown",
+            )
+        except Exception:
+            pass
+    # Avto-ochish
+    if mins and mins > 0:
+        async def _auto_unlock():
+            await asyncio.sleep(mins * 60)
+            if chat_id in locked_chats:
+                await unlock_chat(context, chat_id)
+                try:
+                    await context.bot.send_message(chat_id, "✅ Guruh ochildi. Reyd tugadi.")
+                except Exception:
+                    pass
+        _spawn(_auto_unlock())
+
+
+async def cmd_lock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("Bu buyruq guruhda ishlaydi.")
+        return
+    if not (is_super_admin(update.effective_user.id) or await is_admin_in_chat(update, context)):
+        return
+    chat_id = update.effective_chat.id
+    if not await bot_can_moderate(context, chat_id):
+        await send_recruit_message(context, chat_id)
+        return
+    if await lock_chat(context, chat_id):
+        await update.message.reply_text("🔒 Guruh muzlatildi. Ochish: /unlock")
+
+
+async def cmd_unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type == "private":
+        await update.message.reply_text("Bu buyruq guruhda ishlaydi.")
+        return
+    if not (is_super_admin(update.effective_user.id) or await is_admin_in_chat(update, context)):
+        return
+    chat_id = update.effective_chat.id
+    if await unlock_chat(context, chat_id):
+        await update.message.reply_text("🔓 Guruh ochildi. Hamma yoza oladi.")
+
 
 # ──────────────────────────────────────────────
 # Kapcha callback
@@ -587,6 +801,20 @@ async def moderate(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     content = msg.text or msg.caption or ""
     chat_id = update.effective_chat.id
     user    = update.effective_user
+
+    # ── ENG YUQORI USTUVORLIK: qora ro'yxat ──
+    # Allaqachon qora ro'yxatdagi odam (boshqa guruhda tutilган) — darhol butunlay chiqaramiz
+    if user.id in BLACKLIST:
+        await delete_and_kick(update, context, "Qora ro'yxatdagi foydalanuvchi", hard_ban=True)
+        return True
+
+    # Bot-reklama / referal-farm spam («/start 71 @xxxbot» + @...bot) → 🔴 qora ro'yxat
+    if is_bot_promo_spam(content):
+        BLACKLIST.add(user.id)
+        save_blacklist(BLACKLIST)
+        await delete_and_kick(update, context, "Bot-reklama spam (referal-farm)",
+                              hard_ban=True, red=True)
+        return True
 
     # Uyatsiz so'zli profil (ism / familiya / username qora ro'yxatda bo'lsa)
     profile = f"{user.first_name or ''} {user.last_name or ''} {user.username or ''}"
@@ -696,6 +924,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`/whitelist add ID` — qo'shish\n"
             "`/whitelist remove ID` — o'chirish\n"
             "`/whitelist list` — ko'rish\n\n"
+            "*Qora ro'yxat (bot-spam):*\n"
+            "`/blacklist list` — ko'rish\n"
+            "`/blacklist remove ID` — chiqarish\n\n"
             "*Guruhlar:*\n"
             "`/addgroup` — guruh qo'shish (guruhda)\n"
             "`/removegroup` — o'chirish\n"
@@ -766,8 +997,12 @@ async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{on if s.get('antiflood', True) else off} Antiflood\n"
         f"{on if s.get('captcha', False)  else off} Kapcha\n"
         f"{on if s.get('slowmode', False) else off} Sekin rejim ({s.get('slowmode_seconds', 60)} sek)\n"
-        f"{on if s.get('block_arabic', False) else off} Arab/xitoy bloklash\n\n"
-        f"*O'zgartirish:* `/toggle links/photos/videos/antiflood/captcha/slowmode/arabic`"
+        f"{on if s.get('block_arabic', False) else off} Arab/xitoy bloklash\n"
+        f"{on if s.get('antiraid', True) else off} Antireyd (reyd paytida avto-muzlatish)\n"
+        f"🔴 Bot-reklama spam → avto qora ro'yxat: *doim yoqiq* ({len(BLACKLIST)} ta ЧС)\n\n"
+        f"*O'zgartirish:* `/toggle links/photos/videos/antiflood/captcha/slowmode/arabic/antiraid`\n"
+        f"🔒 Qo'lda: guruhda `/lock` (muzlatish) va `/unlock` (ochish)\n"
+        f"⛔️ Qora ro'yxat: `/blacklist list` · `/blacklist remove ID`"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -776,14 +1011,14 @@ async def cmd_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != "private" or not is_super_admin(update.effective_user.id):
         return
     if not context.args:
-        await update.message.reply_text("Ishlatish: /toggle links|photos|videos|antiflood|captcha|slowmode|arabic")
+        await update.message.reply_text("Ishlatish: /toggle links|photos|videos|antiflood|captcha|slowmode|arabic|antiraid")
         return
 
     key_map = {
         "links": "block_links", "photos": "block_photos",
         "videos": "block_videos", "antiflood": "antiflood",
         "captcha": "captcha", "slowmode": "slowmode",
-        "arabic": "block_arabic",
+        "arabic": "block_arabic", "antiraid": "antiraid",
     }
     arg = context.args[0].lower()
     key = key_map.get(arg)
@@ -896,6 +1131,52 @@ async def cmd_whitelist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         WHITELIST.discard(uid)
         save_whitelist(WHITELIST)
         await update.message.reply_text(f"Ochirildi: {uid}")
+
+
+async def cmd_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Qora ro'yxatni boshqarish: ko'rish / qo'lda qo'shish / chiqarish (xato bo'lsa)."""
+    if update.effective_chat.type != "private" or not is_super_admin(update.effective_user.id):
+        return
+    if not context.args:
+        await update.message.reply_text(
+            f"⛔️ *Qora ro'yxat:* {len(BLACKLIST)} ta\n\n"
+            "Ishlatish:\n"
+            "`/blacklist list` — ko'rish\n"
+            "`/blacklist remove ID` — chiqarish (xato bo'lsa)\n"
+            "`/blacklist add ID` — qo'lda qo'shish",
+            parse_mode="Markdown")
+        return
+
+    action = context.args[0].lower()
+    if action == "list":
+        if not BLACKLIST:
+            await update.message.reply_text("Qora ro'yxat bo'sh.")
+        else:
+            ids = sorted(BLACKLIST)
+            await update.message.reply_text(
+                f"⛔️ Qora ro'yxat ({len(ids)}):\n" + "\n".join(f"• `{u}`" for u in ids),
+                parse_mode="Markdown")
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text("ID kiriting!")
+        return
+    try:
+        uid = int(context.args[1])
+    except ValueError:
+        await update.message.reply_text("Noto'g'ri ID!")
+        return
+
+    if action == "add":
+        BLACKLIST.add(uid)
+        save_blacklist(BLACKLIST)
+        await update.message.reply_text(f"⛔️ {uid} qora ro'yxatga qo'shildi.")
+    elif action == "remove":
+        BLACKLIST.discard(uid)
+        save_blacklist(BLACKLIST)
+        await update.message.reply_text(f"✅ {uid} qora ro'yxatdan chiqarildi.")
+    else:
+        await update.message.reply_text("Noma'lum amal. list | add | remove")
 
 
 async def cmd_addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1071,9 +1352,12 @@ def main() -> None:
     app.add_handler(CommandHandler("listwords",  cmd_listwords))
     app.add_handler(CommandHandler("clearwords", cmd_clearwords))
     app.add_handler(CommandHandler("whitelist",  cmd_whitelist))
+    app.add_handler(CommandHandler("blacklist",  cmd_blacklist))
     app.add_handler(CommandHandler("addgroup",   cmd_addgroup))
     app.add_handler(CommandHandler("removegroup",cmd_removegroup))
     app.add_handler(CommandHandler("listgroups", cmd_listgroups))
+    app.add_handler(CommandHandler("lock",       cmd_lock))
+    app.add_handler(CommandHandler("unlock",     cmd_unlock))
 
     # Yangi a'zo
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_member))
@@ -1106,6 +1390,10 @@ def main() -> None:
 
     logger.info("✅ TezWeb Antispam Bot ishga tushdi!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
